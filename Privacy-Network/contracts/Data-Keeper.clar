@@ -48,6 +48,7 @@
 (define-constant ERR-REQUEST-NOT-FOUND (err u500))
 (define-constant ERR-REQUEST-ALREADY-PROCESSED (err u501))
 (define-constant ERR-REQUEST-STATUS-INVALID (err u502))
+(define-constant ERR-INVALID-REQUEST-ID (err u503))
 
 ;; Input Validation Errors
 (define-constant ERR-MALFORMED-INPUT (err u600))
@@ -62,6 +63,7 @@
 (define-constant maximum-retention-blocks u525600)
 (define-constant maximum-admin-notes-length u200)
 (define-constant hash-length u32)
+(define-constant maximum-request-id u1000000)
 
 ;; ===========================
 ;; GLOBAL SYSTEM STATE TRACKING
@@ -166,6 +168,10 @@
 
 (define-private (validate-policy-version (version uint))
   (and (> version u0) (<= version u1000000))
+)
+
+(define-private (validate-request-id (request-id uint))
+  (and (> request-id u0) (<= request-id maximum-request-id))
 )
 
 (define-private (validate-text-content (content (string-ascii 50)))
@@ -617,33 +623,37 @@
   (new-status (string-ascii 20))
   (admin-notes (optional (string-ascii 200)))
 )
-  (let (
-    (request-record (map-get? rights-requests-queue { requester-principal: requester-principal, request-id: request-id }))
-  )
+  (begin
     ;; Authorization checks
     (asserts! (verify-contract-owner) ERR-UNAUTHORIZED-ACCESS)
     (asserts! (verify-system-operational) ERR-SYSTEM-LOCKDOWN-ACTIVE)
     
-    ;; Input validation
+    ;; Input validation - validate request-id first before using it
     (asserts! (validate-principal-address requester-principal) ERR-INVALID-ADDRESS)
+    (asserts! (validate-request-id request-id) ERR-INVALID-REQUEST-ID)
     (asserts! (validate-request-status new-status) ERR-REQUEST-STATUS-INVALID)
     (asserts! (validate-admin-notes admin-notes) ERR-MALFORMED-INPUT)
     
-    (match request-record
-      request-data (begin
-        (asserts! (is-eq (get current-status request-data) "pending-review") ERR-REQUEST-ALREADY-PROCESSED)
-        
-        (map-set rights-requests-queue
-          { requester-principal: requester-principal, request-id: request-id }
-          (merge request-data {
-            current-status: new-status,
-            completed-date: (if (is-eq new-status "completed") (some block-height) none),
-            admin-notes: admin-notes
-          })
+    ;; Now that request-id is validated, we can safely use it
+    (let (
+      (request-record (map-get? rights-requests-queue { requester-principal: requester-principal, request-id: request-id }))
+    )
+      (match request-record
+        request-data (begin
+          (asserts! (is-eq (get current-status request-data) "pending-review") ERR-REQUEST-ALREADY-PROCESSED)
+          
+          (map-set rights-requests-queue
+            { requester-principal: requester-principal, request-id: request-id }
+            (merge request-data {
+              current-status: new-status,
+              completed-date: (if (is-eq new-status "completed") (some block-height) none),
+              admin-notes: admin-notes
+            })
+          )
+          (ok true)
         )
-        (ok true)
+        ERR-REQUEST-NOT-FOUND
       )
-      ERR-REQUEST-NOT-FOUND
     )
   )
 )
